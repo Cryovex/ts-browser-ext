@@ -1,9 +1,10 @@
-module github.com/tailscale/ts-browser-ext
+module github.com/Cryovex/ts-browser-ext
 
 go 1.26.3
 
 require (
 	github.com/gorilla/csrf v1.7.3
+	golang.org/x/sys v0.43.0
 	tailscale.com v1.98.2
 )
 
@@ -45,7 +46,6 @@ require (
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/term v0.42.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/time v0.12.0 // indirect

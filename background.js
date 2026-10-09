@@ -1,4 +1,6 @@
 let proxyEnabled = false;
+let initialized = false;
+let activeProxyPort = 0;
 
 // setPopupIcon sets the icon. It takes either a boolean (for online/offline)
 // or the base name of the png file.
@@ -25,11 +27,8 @@ function enableProxy() {
     return;
   }
 
-  if (lastProxyPort) {
-    nmPort.postMessage({ cmd: "get-status" });
-  } else {
-    nmPort.postMessage({ cmd: "up" });
-  }
+  if (!initialized) return;
+  nmPort.postMessage({ cmd: "up" });
 }
 
 function disableProxy() {
@@ -45,8 +44,7 @@ function disableProxy() {
       deadPort
     );
   }
-  proxyEnabled = false;
-  lastProxyPort = 0;
+  setProxy(0);
   console.log(
     "Proxy disabled, proxyEnabled:",
     proxyEnabled,
@@ -91,7 +89,7 @@ function sendPopupStatus() {
     console.log("sendPopupStatus... no nmPort");
     sendToPopup({
       installCmd:
-        "go run github.com/tailscale/ts-browser-ext@main --install=" +
+        "go run github.com/Cryovex/ts-browser-ext@main --install=" +
         browserByte() +
         chrome.runtime.id,
     });
@@ -119,20 +117,25 @@ function connectToNativeHost() {
     return;
   }
   console.log("Connecting to native messaging host...");
-  nmPort = chrome.runtime.connectNative("com.tailscale.browserext.chrome");
+  nmPort = chrome.runtime.connectNative("io.github.cryovex.ts_browser_ext.chrome");
 
   nmPort.onDisconnect.addListener(() => {
     deadPort = true;
+    didInit = false;
+    initialized = false;
+    lastProxyPort = 0;
+    lastStatus = { running: false, error: "Native host disconnected" };
+    setProxy(0);
     setPopupIcon("need-install");
-    disableProxy();
+    sendPopupStatus();
     const error = chrome.runtime.lastError;
     if (error) {
       console.error("Connection failed:", error.message);
       portError = error.message;
-      setTimeout(connectToNativeHost, 1000);
     } else {
       console.error("Disconnected from native host");
     }
+    setTimeout(connectToNativeHost, 1000);
   });
   nmPort.onMessage.addListener((message) => {
     console.log("got message: " + JSON.stringify(message));
@@ -142,20 +145,22 @@ function connectToNativeHost() {
     }
     if (message.procRunning) {
       if (message.procRunning.port) {
-        setProxy(message.procRunning.port);
-      } else if (message.procRunning.errror) {
+        lastProxyPort = message.procRunning.port;
+      } else if (message.procRunning.error) {
         console.log(
-          "procRunning error from backend: " + message.procRunning.err
+          "procRunning error from backend: " + message.procRunning.error
         );
         disableProxy();
       }
     }
-    if (message.init && message.init.error) {
-      console.log("init error from backend: " + message.init.err);
-      disableProxy();
+    if (message.init) {
+      initialized = !message.init.error;
+      if (message.init.error) console.error("init error from backend:", message.init.error);
+      syncProxyWithStatus();
     }
     if (message.status) {
       lastStatus = message.status;
+      syncProxyWithStatus();
     }
     maybeSendInit();
     sendPopupStatus();
@@ -165,46 +170,29 @@ function connectToNativeHost() {
 var lastProxyPort = 0;
 var lastStatus = {}; // last Go status
 
+function syncProxyWithStatus() {
+  const shouldRoute = initialized && !deadPort && (lastStatus.running || lastStatus.needsLogin);
+  setProxy(shouldRoute ? lastProxyPort : 0);
+}
+
 function setProxy(proxyPort) {
-  if (proxyPort) {
-    proxyEnabled = true;
-    lastProxyPort = proxyPort;
-    console.log("Enabling proxy at port: " + proxyPort);
-  } else {
-    proxyEnabled = false;
-    console.log("Disabling proxy...");
-    chrome.proxy.settings.set(
-      {
-        value: {
-          mode: "direct",
-        },
-        scope: "regular",
-      },
-      () => {
-        console.log("Proxy disabled.");
-      }
-    );
+  proxyEnabled = !!proxyPort;
+  if (proxyPort === activeProxyPort) return;
+  activeProxyPort = proxyPort;
+  const onChanged = () => {
+    if (chrome.runtime.lastError) console.error("Proxy update failed:", chrome.runtime.lastError.message);
+  };
+  if (!proxyPort) {
+    chrome.proxy.settings.clear({ scope: "regular" }, onChanged);
     return;
   }
-  chrome.proxy.settings.set(
-    {
-      value: {
-        mode: "fixed_servers",
-        rules: {
-          singleProxy: {
-            scheme: "http",
-            host: "127.0.0.1",
-            port: proxyPort,
-          },
-          bypassList: ["localhost", "127.*"],
-        },
-      },
-      scope: "regular",
+  chrome.proxy.settings.set({
+    value: {
+      mode: "fixed_servers",
+      rules: { singleProxy: { scheme: "http", host: "127.0.0.1", port: proxyPort }, bypassList: ["localhost", "127.*"] }
     },
-    () => {
-      console.log("Proxy enabled: 127.0.0.1:" + proxyPort);
-    }
-  );
+    scope: "regular"
+  }, onChanged);
 }
 
 var profileID = "";

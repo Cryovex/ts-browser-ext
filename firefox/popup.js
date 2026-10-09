@@ -26,6 +26,9 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function updateStatus(status) {
+    lastStatus = status;
+    toggleSlider.disabled = false;
+    settingsButton.hidden = false;
     isLoading = false;
     hasReceivedInitialState = true;
     if (status.error) {
@@ -40,7 +43,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (status.needsLogin) {
       stateDisplay.innerHTML = status.browseToURL
-        ? `<b><a href='${status.browseToURL}'>Log in</a></b>`
+        ? `<b><a href='#login'>Log in</a></b>`
         : "<b>Login required; no URL</b>";
       return;
     }
@@ -86,6 +89,13 @@ document.addEventListener("DOMContentLoaded", () => {
     if (msg.status) {
       console.log("Received status update:", msg.status);
       updateStatus(msg.status);
+    }
+  });
+
+  stateDisplay.addEventListener("click", (event) => {
+    if (event.target.closest("a[href='#login']") && lastStatus?.browseToURL) {
+      event.preventDefault();
+      browser.tabs.create({ url: lastStatus.browseToURL });
     }
   });
 

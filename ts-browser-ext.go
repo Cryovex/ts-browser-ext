@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"log/syslog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -36,8 +35,9 @@ import (
 )
 
 var (
-	installFlag   = flag.String("install", "", "register the browser extension; string is 'C' (Chrome) or 'F' (Firefox) followed by extension ID")
-	uninstallFlag = flag.Bool("uninstall", false, "unregister the browser extension")
+	installFlag          = flag.String("install", "", "register the browser extension; string is 'C' (Chrome) or 'F' (Firefox) followed by extension ID")
+	uninstallFlag        = flag.Bool("uninstall", false, "unregister the browser extension")
+	uninstallBrowserFlag = flag.String("uninstall-browser", "", "unregister only C (Chrome) or F (Firefox)")
 )
 
 func main() {
@@ -48,8 +48,8 @@ func main() {
 		}
 		return
 	}
-	if *uninstallFlag {
-		if err := uninstall(); err != nil {
+	if *uninstallFlag || *uninstallBrowserFlag != "" {
+		if err := uninstall(*uninstallBrowserFlag); err != nil {
 			log.Fatalf("uninstallation error: %v", err)
 		}
 		return
@@ -61,7 +61,7 @@ running as a child process HTTP/SOCKS5 under your browser.
 
 To register it once, run:
 
-     $ ts-browser-ext --install=chrome
+     $ ts-browser-ext --install=Fts-browser-ext@cryovex
 `)
 		return
 	}
@@ -69,16 +69,7 @@ To register it once, run:
 	hostinfo.SetApp("ts-browser-ext")
 
 	h := newHost(os.Stdin, os.Stdout)
-
-	if w, err := syslog.Dial("tcp", "localhost:5555", syslog.LOG_INFO, "browser"); err == nil {
-		log.Printf("syslog dialed")
-		h.logf = func(f string, a ...any) {
-			fmt.Fprintf(w, f, a...)
-		}
-		log.SetOutput(w)
-	} else {
-		log.Printf("syslog: %v", err)
-	}
+	defer h.close()
 
 	ln := h.getProxyListener()
 	port := ln.Addr().(*net.TCPAddr).Port
@@ -94,6 +85,9 @@ To register it once, run:
 }
 
 func getTargetDir(browserByte string) (string, error) {
+	if browserByte != "C" && browserByte != "F" {
+		return "", fmt.Errorf("unknown browser prefix %q", browserByte)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -112,25 +106,49 @@ func getTargetDir(browserByte string) (string, error) {
 		} else if browserByte == "F" {
 			dir = filepath.Join(home, "Library", "Application Support", "Mozilla", "NativeMessagingHosts")
 		}
+	case "windows":
+		conf, err := os.UserConfigDir()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(conf, "ts-browser-ext-cryovex", "native-hosts", browserByte)
 	default:
 		return "", fmt.Errorf("TODO: implement support for installing on %q", runtime.GOOS)
-	}
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", err
 	}
 	return dir, nil
 }
 
-func uninstall() error {
-	for _, browserByte := range []string{"C", "F"} {
+func nativeHostName(browserByte string) string {
+	if browserByte == "F" {
+		return "io.github.cryovex.ts_browser_ext.firefox"
+	}
+	return "io.github.cryovex.ts_browser_ext.chrome"
+}
+
+func executableName() string {
+	if runtime.GOOS == "windows" {
+		return "ts-browser-ext-cryovex.exe"
+	}
+	return "ts-browser-ext-cryovex"
+}
+
+func uninstall(onlyBrowser string) error {
+	browsers := []string{"C", "F"}
+	if onlyBrowser != "" {
+		if onlyBrowser != "C" && onlyBrowser != "F" {
+			return fmt.Errorf("invalid browser %q", onlyBrowser)
+		}
+		browsers = []string{onlyBrowser}
+	}
+	for _, browserByte := range browsers {
 		targetDir, err := getTargetDir(browserByte)
 		if err != nil {
 			return err
 		}
-		targetBin := filepath.Join(targetDir, "ts-browser-ext")
-		targetJSON := filepath.Join(targetDir, "com.tailscale.browserext.chrome.json")
-		if browserByte == "F" {
-			targetJSON = filepath.Join(targetDir, "com.tailscale.browserext.firefox.json")
+		targetBin := filepath.Join(targetDir, executableName())
+		targetJSON := filepath.Join(targetDir, nativeHostName(browserByte)+".json")
+		if err := unregisterNativeHost(browserByte, targetJSON); err != nil {
+			return err
 		}
 		if err := os.Remove(targetBin); err != nil && !os.IsNotExist(err) {
 			return err
@@ -143,6 +161,9 @@ func uninstall() error {
 }
 
 func install(installArg string) error {
+	if len(installArg) < 2 {
+		return errors.New("installation requires a browser prefix and extension ID")
+	}
 	browserByte, extension := installArg[0:1], installArg[1:]
 	switch browserByte {
 	case "C":
@@ -151,6 +172,9 @@ func install(installArg string) error {
 			return fmt.Errorf("invalid extension ID %q", extension)
 		}
 	case "F":
+		if strings.ContainsAny(extension, "\x00\r\n") {
+			return errors.New("invalid Firefox extension ID")
+		}
 	default:
 		return fmt.Errorf("unknown browser prefix byte %q", browserByte)
 	}
@@ -163,51 +187,46 @@ func install(installArg string) error {
 	if err != nil {
 		return err
 	}
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return err
+	}
 	binary, err := os.ReadFile(exe)
 	if err != nil {
 		return err
 	}
-	targetBin := filepath.Join(targetDir, "ts-browser-ext")
+	targetBin := filepath.Join(targetDir, executableName())
 	if err := os.WriteFile(targetBin, binary, 0755); err != nil {
 		return err
 	}
 	log.SetFlags(0)
 	log.Printf("copied binary to %v", targetBin)
 
-	var targetJSON string
-	var jsonConf []byte
-
-	switch browserByte {
-	case "C":
-		targetJSON = filepath.Join(targetDir, "com.tailscale.browserext.chrome.json")
-		jsonConf = fmt.Appendf(nil, `{
-		"name": "com.tailscale.browserext.chrome",
-		"description": "Tailscale Browser Extension",
-		"path": "%s",
-		"type": "stdio",
-		"allowed_origins": [
-			"chrome-extension://%s/"
-		]
-	  }`, targetBin, extension)
-	case "F":
-		targetJSON = filepath.Join(targetDir, "com.tailscale.browserext.firefox.json")
-		jsonConf = fmt.Appendf(nil, `{
-		"name": "com.tailscale.browserext.firefox",
-		"description": "Tailscale Browser Extension",
-		"path": "%s",
-		"type": "stdio",
-		"allowed_extensions": [
-			"browser-ext@tailscale.com"
-		]
-	  }`, targetBin)
-	default:
-		return fmt.Errorf("unknown browser prefix byte %q", browserByte)
+	targetJSON := filepath.Join(targetDir, nativeHostName(browserByte)+".json")
+	jsonConf, err := nativeManifest(browserByte, extension, targetBin)
+	if err != nil {
+		return err
 	}
 	if err := os.WriteFile(targetJSON, jsonConf, 0644); err != nil {
 		return err
 	}
+	if err := registerNativeHost(browserByte, targetJSON); err != nil {
+		return err
+	}
 	log.Printf("wrote registration to %v", targetJSON)
 	return nil
+}
+
+func nativeManifest(browserByte, extension, binaryPath string) ([]byte, error) {
+	manifest := map[string]any{
+		"name": nativeHostName(browserByte), "description": "Tailnet Browser (unofficial Cryovex fork)",
+		"path": binaryPath, "type": "stdio",
+	}
+	if browserByte == "F" {
+		manifest["allowed_extensions"] = []string{extension}
+	} else {
+		manifest["allowed_origins"] = []string{"chrome-extension://" + extension + "/"}
+	}
+	return json.MarshalIndent(manifest, "", "  ")
 }
 
 type host struct {
@@ -216,8 +235,6 @@ type host struct {
 	logf logger.Logf
 
 	wmu sync.Mutex // guards writing to w
-
-	lenBuf [4]byte // owned by readMessages
 
 	mu              sync.Mutex
 	watchDead       bool
@@ -231,6 +248,21 @@ type host struct {
 	ln              net.Listener
 	wantUp          bool
 	// ...
+}
+
+func (h *host) close() {
+	h.mu.Lock()
+	cancel, ln, started := h.cancelCtx, h.ln, h.ts.Sys() != nil
+	h.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if ln != nil {
+		ln.Close()
+	}
+	if started {
+		h.ts.Close()
+	}
 }
 
 func newHost(r io.Reader, w io.Writer) *host {
@@ -355,13 +387,17 @@ func (h *host) handleInit(msg *request) (ret error) {
 	if err != nil {
 		return fmt.Errorf("getting current user: %w", err)
 	}
-	h.ts.Hostname = u.Username + "-browser-ext"
+	username := u.Username
+	if i := strings.LastIndexAny(username, `\/`); i >= 0 {
+		username = username[i+1:]
+	}
+	h.ts.Hostname = username + "-browser-ext"
 
 	confDir, err := os.UserConfigDir()
 	if err != nil {
 		return fmt.Errorf("getting user config dir: %w", err)
 	}
-	h.ts.Dir = filepath.Join(confDir, "tailscale-browser-ext", id)
+	h.ts.Dir = filepath.Join(confDir, "ts-browser-ext-cryovex", "state", id)
 
 	h.logf("Starting...")
 	if err := h.ts.Start(); err != nil {
@@ -439,10 +475,11 @@ func (h *host) send(msg *reply) error {
 	if len(msgb) > maxMsgSize {
 		return fmt.Errorf("message too big (%v)", len(msgb))
 	}
-	binary.LittleEndian.PutUint32(h.lenBuf[:], uint32(len(msgb)))
+	var lenBuf [4]byte
+	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(msgb)))
 	h.wmu.Lock()
 	defer h.wmu.Unlock()
-	if _, err := h.w.Write(h.lenBuf[:]); err != nil {
+	if _, err := h.w.Write(lenBuf[:]); err != nil {
 		return err
 	}
 	if _, err := h.w.Write(msgb); err != nil {
@@ -470,14 +507,18 @@ func (h *host) getProxyListenerLocked() net.Listener {
 
 	hs := &http.Server{Handler: h.httpProxyHandler()}
 	go func() {
-		log.Fatalf("HTTP proxy exited: %v", hs.Serve(httpListener))
+		if err := hs.Serve(httpListener); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, http.ErrServerClosed) {
+			h.logf("HTTP proxy exited: %v", err)
+		}
 	}()
 	ss := &socks5.Server{
 		Logf:   logger.WithPrefix(h.logf, "socks5: "),
 		Dialer: h.userDial,
 	}
 	go func() {
-		log.Fatalf("SOCKS5 server exited: %v", ss.Serve(socksListener))
+		if err := ss.Serve(socksListener); err != nil && !errors.Is(err, net.ErrClosed) {
+			h.logf("SOCKS5 proxy exited: %v", err)
+		}
 	}()
 	return h.ln
 }
@@ -576,10 +617,11 @@ type status struct {
 }
 
 func (h *host) readMessage() (*request, error) {
-	if _, err := io.ReadFull(h.br, h.lenBuf[:]); err != nil {
+	var lenBuf [4]byte
+	if _, err := io.ReadFull(h.br, lenBuf[:]); err != nil {
 		return nil, err
 	}
-	msgSize := binary.LittleEndian.Uint32(h.lenBuf[:])
+	msgSize := binary.LittleEndian.Uint32(lenBuf[:])
 	if msgSize > maxMsgSize {
 		return nil, fmt.Errorf("message size too big (%v)", msgSize)
 	}
@@ -607,7 +649,14 @@ func (h *host) httpProxyHandler() http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Host == "100.100.100.100" {
-			h.ws.ServeHTTP(w, csrf.PlaintextHTTPRequest(r))
+			h.mu.Lock()
+			ws := h.ws
+			h.mu.Unlock()
+			if ws == nil {
+				http.Error(w, "Tailscale is still starting", http.StatusServiceUnavailable)
+				return
+			}
+			ws.ServeHTTP(w, csrf.PlaintextHTTPRequest(r))
 			return
 		}
 

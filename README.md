@@ -1,5 +1,9 @@
 # Tailscale Browser Extension (Experiment)
 
+**Unofficial Cryovex fork:** includes messaging, login, proxy cleanup, reconnect,
+and Windows native-host repairs. See [Windows setup and rollback](WINDOWS.md).
+The upstream status notes below describe the original project.
+
 [![status: experimental](https://img.shields.io/badge/status-experimental-blue)](https://tailscale.com/kb/1167/release-stages/#experimental)
 
 The [Tailscale](https://tailscale.com/) Browser Extension lets you access your tailnet resources

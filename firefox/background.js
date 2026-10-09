@@ -1,4 +1,7 @@
 let proxyEnabled = false;
+let initialized = false;
+let activeProxyPort = 0;
+let activeProxyHandler = null;
 
 // setPopupIcon sets the icon. It takes either a boolean (for online/offline)
 // or the base name of the png file.
@@ -20,11 +23,8 @@ function enableProxy() {
     return;
   }
 
-  if (lastProxyPort) {
-    nmPort.postMessage({ cmd: "get-status" });
-  } else {
-    nmPort.postMessage({ cmd: "up" });
-  }
+  if (!initialized) return;
+  nmPort.postMessage({ cmd: "up" });
 }
 
 function disableProxy() {
@@ -40,8 +40,7 @@ function disableProxy() {
       deadPort
     );
   }
-  proxyEnabled = false;
-  lastProxyPort = 0;
+  setProxy(0);
   console.log(
     "Proxy disabled, proxyEnabled:",
     proxyEnabled,
@@ -95,7 +94,7 @@ function sendPopupStatus() {
     console.log("sendPopupStatus... no nmPort");
     sendToPopup({
       installCmd:
-        "go run github.com/tailscale/ts-browser-ext@main --install=" +
+        "go run github.com/Cryovex/ts-browser-ext@main --install=" +
         browserByte() +
         browser.runtime.id,
     });
@@ -123,20 +122,25 @@ function connectToNativeHost() {
     return;
   }
   console.log("Connecting to native messaging host...");
-  nmPort = browser.runtime.connectNative("com.tailscale.browserext.firefox");
+  nmPort = browser.runtime.connectNative("io.github.cryovex.ts_browser_ext.firefox");
 
   nmPort.onDisconnect.addListener(() => {
     deadPort = true;
+    didInit = false;
+    initialized = false;
+    lastProxyPort = 0;
+    lastStatus = { running: false, error: "Native host disconnected" };
+    setProxy(0);
     setPopupIcon("need-install");
-    disableProxy();
+    sendPopupStatus();
     const error = browser.runtime.lastError;
     if (error) {
       console.error("Connection failed:", error.message);
       portError = error.message;
-      setTimeout(connectToNativeHost, 1000);
     } else {
       console.error("Disconnected from native host");
     }
+    setTimeout(connectToNativeHost, 1000);
   });
   nmPort.onMessage.addListener((message) => {
     console.log("got message: " + JSON.stringify(message));
@@ -146,20 +150,22 @@ function connectToNativeHost() {
     }
     if (message.procRunning) {
       if (message.procRunning.port) {
-        setProxy(message.procRunning.port);
-      } else if (message.procRunning.errror) {
+        lastProxyPort = message.procRunning.port;
+      } else if (message.procRunning.error) {
         console.log(
-          "procRunning error from backend: " + message.procRunning.err
+          "procRunning error from backend: " + message.procRunning.error
         );
         disableProxy();
       }
     }
-    if (message.init && message.init.error) {
-      console.log("init error from backend: " + message.init.err);
-      disableProxy();
+    if (message.init) {
+      initialized = !message.init.error;
+      if (message.init.error) console.error("init error from backend:", message.init.error);
+      syncProxyWithStatus();
     }
     if (message.status) {
       lastStatus = message.status;
+      syncProxyWithStatus();
     }
     maybeSendInit();
     sendPopupStatus();
@@ -169,29 +175,30 @@ function connectToNativeHost() {
 var lastProxyPort = 0;
 var lastStatus = {}; // last Go status
 
+function syncProxyWithStatus() {
+  const shouldRoute = initialized && !deadPort && (lastStatus.running || lastStatus.needsLogin);
+  setProxy(shouldRoute ? lastProxyPort : 0);
+}
+
 function setProxy(proxyPort) {
-  const handleProxyRequest = proxyHandler(proxyPort)
-  if (proxyPort) {
-    proxyEnabled = true;
-    lastProxyPort = proxyPort;
-    console.log("Enabling proxy at port: " + proxyPort);
-  } else {
-    proxyEnabled = false;
-    console.log("Disabling proxy...");
-    browser.proxy.onRequest.removeListener(handleProxyRequest)
-    browser.proxy.settings
-      .set({
-        value: {
-          mode: "direct",
-        },
-        scope: "regular",
-      })
-      .then(() => {
-        console.log("Proxy disabled.");
-      });
+  if (proxyPort === activeProxyPort) return;
+  if (activeProxyHandler) {
+    browser.proxy.onRequest.removeListener(activeProxyHandler);
+    activeProxyHandler = null;
+  }
+  proxyEnabled = false;
+  activeProxyPort = 0;
+  if (!proxyPort) return;
+  activeProxyHandler = proxyHandler(proxyPort);
+  try {
+    browser.proxy.onRequest.addListener(activeProxyHandler, { urls: ["<all_urls>"] });
+  } catch (error) {
+    activeProxyHandler = null;
+    lastStatus = { ...lastStatus, running: false, error: "Firefox proxy permission: " + error.message };
     return;
   }
-  browser.proxy.onRequest.addListener(handleProxyRequest, { urls: ["<all_urls>"] })
+  activeProxyPort = proxyPort;
+  proxyEnabled = true;
 }
 
 var profileID = "";
@@ -202,13 +209,17 @@ function proxyHandler(port) {
   return function handleProxyRequest(requestInfo) {
     const url = new URL(requestInfo.url)
 
+    if (url.hostname === "localhost" || url.hostname.endsWith(".localhost") || url.hostname === "[::1]" || /^127\.\d+\.\d+\.\d+$/.test(url.hostname)) {
+      return { type: "direct" };
+    }
+
     // we need to use http for 100.100.100.100
     if (url.hostname == '100.100.100.100') {
       return { type: "http", host: "127.0.0.1", port: port };
     }
 
     // use socks for everything else
-    return { type: "socks", host: "127.0.0.1", port: port, proxyDNS: true, bypassList: ["localhost", "127.*"] };
+    return { type: "socks", host: "127.0.0.1", port: port, proxyDNS: true };
   }
 }
 
