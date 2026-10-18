@@ -11,6 +11,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const port = browser.runtime.connect({ name: "popup" });
 
+  function showBoldStatus(text, href) {
+    const bold = document.createElement("b");
+    if (href) {
+      const link = document.createElement("a");
+      link.href = href;
+      link.textContent = text;
+      bold.appendChild(link);
+    } else {
+      bold.textContent = text;
+    }
+    stateDisplay.replaceChildren(bold);
+  }
+
   function updateSliderState() {
     if (isLoading) {
       slider.className = "slider loading";
@@ -42,9 +55,10 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     if (status.needsLogin) {
-      stateDisplay.innerHTML = status.browseToURL
-        ? `<b><a href='#login'>Log in</a></b>`
-        : "<b>Login required; no URL</b>";
+      showBoldStatus(
+        status.browseToURL ? "Log in" : "Login required; no URL",
+        status.browseToURL ? "#login" : null
+      );
       return;
     }
     if (typeof status === "string" && status === "Disconnected") {
@@ -68,13 +82,16 @@ document.addEventListener("DOMContentLoaded", () => {
     // firefox requires that extensions settings proxies have private browsing access
     if (msg.needsIncognitoPermission) {
       console.log("Private browsing permission needed")
-      stateDisplay.innerHTML = `<b><a href="https://support.mozilla.org/en-US/kb/extensions-private-browsing#w_enabling-or-disabling-extensions-in-private-windows">Enable private browsing access.</a></b>`
+      showBoldStatus("Enable private browsing access.", "https://support.mozilla.org/en-US/kb/extensions-private-browsing#w_enabling-or-disabling-extensions-in-private-windows");
       return;
     }
 
     if (msg.installCmd) {
       console.log("Received install command");
-      stateDisplay.innerHTML = `<b>Installation needed. Run:</b><pre>${msg.installCmd}</pre>`;
+      showBoldStatus("Installation needed. Run:");
+      const command = document.createElement("pre");
+      command.textContent = msg.installCmd;
+      stateDisplay.appendChild(command);
       toggleSlider.disabled = true;
       settingsButton.hidden = true;
       return;

@@ -100,24 +100,52 @@ for (const name of ['Chrome', 'Firefox']) {
   });
   test(name + ': login click opens the supplied URL', () => {
     const registrations = [], tabs = [];
+    const firefoxPopup = name === 'Firefox';
     let ready;
-    function element(name) { return {innerHTML:'',textContent:'',classList:{remove(){}},addEventListener(type,fn){registrations.push({name,type,fn});}}; }
+    function element(name) {
+      const node = {textContent:'', children:[], classList:{remove(){}},
+        appendChild(child){this.children.push(child);return child;},
+        replaceChildren(...children){this.children=children;},
+        addEventListener(type,fn){registrations.push({name,type,fn});}};
+      if (firefoxPopup) Object.defineProperty(node, 'innerHTML', {
+        set(){throw new Error('Firefox popup must not parse HTML strings');}
+      });
+      return node;
+    }
     const elements = Object.fromEntries(['toggleSlider','.slider','settingsButton','state'].map(x=>[x,element(x)]));
     const port = {onMessage: event(), disconnect(){}};
-    const document = {addEventListener(type,fn){if(type==='DOMContentLoaded')ready=fn;},getElementById:name=>elements[name],querySelector:name=>elements[name]};
+    const document = {createElement:element,addEventListener(type,fn){if(type==='DOMContentLoaded')ready=fn;},getElementById:name=>elements[name],querySelector:name=>elements[name]};
     const api = {runtime:{connect:()=>port},tabs:{create:item=>{tabs.push(item);return Promise.resolve();}}};
     const context = vm.createContext({document,console:quiet,window:{addEventListener(){}},chrome:api,browser:api});
     vm.runInContext(fs.readFileSync(path.join(root,name==='Chrome'?'popup.js':'firefox/popup.js'),'utf8'),context);
     ready();
     const url='https://login.tailscale.com/a/example';
     port.onMessage.emit({status:{running:false,needsLogin:true,browseToURL:url}});
-    assert.match(elements.state.innerHTML,/href='#login'/);
+    if (name === 'Chrome') {
+      assert.match(elements.state.innerHTML,/href='#login'/);
+    } else {
+      assert.equal(elements.state.children[0].children[0].href, '#login');
+      assert.equal(elements.state.children[0].children[0].textContent, 'Log in');
+    }
     const click=registrations.find(x=>x.name==='state'&&x.type==='click');
     assert.ok(click);
     let prevented=false;
     click.fn({target:{closest:()=>({})},preventDefault(){prevented=true;}});
     assert.equal(prevented,true);
     assert.equal(tabs[0].url,url);
+    if (name === 'Firefox') {
+      const command = '<img src=x onerror=alert(1)> & "quoted"';
+      port.onMessage.emit({installCmd:command});
+      assert.equal(elements.state.children[1].textContent,command);
+      assert.equal(elements.state.children[1].children.length,0);
+      assert.equal(elements.toggleSlider.disabled,true);
+      port.onMessage.emit({needsIncognitoPermission:true});
+      assert.equal(elements.state.children.length,1);
+      assert.equal(elements.state.children[0].children[0].textContent,'Enable private browsing access.');
+      port.onMessage.emit({status:{needsLogin:true}});
+      assert.equal(elements.state.children[0].textContent,'Login required; no URL');
+      assert.equal(elements.state.children[0].children.length,0);
+    }
   });
 }
 test('Firefox bypasses loopback and resolves tailnet names over SOCKS', async () => {

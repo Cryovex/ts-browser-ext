@@ -1,12 +1,23 @@
 {
     "manifest_version": 3,
     "name": "Tailnet Browser (Unofficial Cryovex Fork)",
-    "version": "1.0.1",
-    "description": "A Tailscale client that runs as a browser extension, permitting use of different tailnets in differenet browser profiles, without affecting the system VPN or networking settings.",
+    "version": "1.0.2",
+    "description": "An unofficial Tailscale client that routes browser traffic through a local helper, with a separate tailnet per browser profile.",
     "browser_specific_settings": {
         "gecko": {
           "id": "ts-browser-ext@cryovex",
-          "strict_min_version": "109.0"
+          "strict_min_version": "140.0",
+          "data_collection_permissions": {
+            "required": [
+              "browsingActivity",
+              "websiteContent",
+              "authenticationInfo",
+              "personallyIdentifyingInfo"
+            ]
+          }
+        },
+        "gecko_android": {
+          "strict_min_version": "142.0"
         }
       },
      "permissions": [

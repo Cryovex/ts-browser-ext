@@ -21,6 +21,9 @@ The smoke test checks the actual Windows executable's framing and clean exit.
 
 ## Install for the current Windows user
 
+The Firefox extension requires Firefox 140 or newer for its built-in data
+transmission consent prompt. See [privacy and data transmission](firefox/PRIVACY.md).
+
 Back up Firefox after closing it normally. Register the built native host:
 
 ```powershell
@@ -40,6 +43,31 @@ it for the proxy API. Open its toolbar popup and choose **Log in**.
 The unsigned temporary extension is removed when Firefox restarts. Permanent
 installation in release Firefox requires Mozilla signing, including for private
 self-distribution. Do not disable Firefox's signature checks.
+
+## Package for Mozilla signing
+
+With Python 3 installed, run from the repository directory:
+
+```powershell
+py -3 scripts/package-firefox.py
+```
+
+Upload `dist/ts-browser-ext-firefox-1.0.2-unsigned.xpi` to Mozilla's developer hub
+using **On your own** for unlisted distribution. The archive contains the
+readable Firefox files, privacy disclosure, license and patent notice; it does
+not include the native executable or your local authentication state. Packaging
+does not compile or minify browser code. For the question about source generation
+for this browser package, select **No**. In reviewer notes, explain that the
+separate native helper's source and build instructions are in this repository.
+Select desktop platforms only: the native helper is not supported on Android.
+The Android manifest minimum only keeps the data-consent declaration's version
+metadata consistent; it does not add Android support.
+
+Download the signed copy from Mozilla and use Firefox's **Install Add-on From
+File** action. Keep the existing extension ID so the registered helper continues
+to recognize it. Signing the extension does not sign or reinstall the native
+helper. Mozilla may request further review or changes; local tests do not
+guarantee acceptance.
 
 ## Clean exit and rollback
 
