@@ -38,10 +38,17 @@ var (
 	installFlag          = flag.String("install", "", "register the browser extension; string is 'C' (Chrome) or 'F' (Firefox) followed by extension ID")
 	uninstallFlag        = flag.Bool("uninstall", false, "unregister the browser extension")
 	uninstallBrowserFlag = flag.String("uninstall-browser", "", "unregister only C (Chrome) or F (Firefox)")
+	versionJSONFlag      = flag.Bool("version-json", false, "print native helper build information and exit")
 )
 
 func main() {
 	flag.Parse()
+	if *versionJSONFlag {
+		if err := json.NewEncoder(os.Stdout).Encode(buildInfo()); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if *installFlag != "" {
 		if err := install(*installFlag); err != nil {
 			log.Fatalf("installation error: %v", err)

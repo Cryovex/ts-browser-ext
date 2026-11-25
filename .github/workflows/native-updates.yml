@@ -1,0 +1,68 @@
+name: Native Tailscale updates
+on:
+  schedule:
+    - cron: '23 9 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: native-update-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Build and test the latest stable Tailscale engine
+        id: build
+        env:
+          NATIVE_PUBLISH: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: node scripts/release-native.cjs
+      - uses: actions/upload-artifact@v4
+        if: steps.build.outputs.built == 'true'
+        with:
+          name: native-release
+          path: dist/
+    outputs:
+      tag: ${{ steps.build.outputs.tag }}
+      built: ${{ steps.build.outputs.built }}
+  publish:
+    needs: build
+    if: needs.build.outputs.built == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-release
+          path: dist
+      - name: Publish only the fully uploaded release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --json isDraft > release.json 2>/dev/null; then
+            test "$(jq -r .isDraft release.json)" = true
+          else
+            gh release create "$RELEASE_TAG" --draft --target "$SOURCE_COMMIT" --title "$RELEASE_TAG" --notes "Unofficial Firefox native helper. Built and tested against the latest stable Tailscale. Includes resolved Go dependencies and a SHA-256 update manifest."
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest
