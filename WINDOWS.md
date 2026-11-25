@@ -1,5 +1,8 @@
 # Windows Firefox build
 
+For automatic updates of the embedded Tailscale engine (the version shown in the
+Tailscale device list), see [automatic engine updates](AUTO-UPDATES.md).
+
 This is an unofficial personal fork of Tailscale's experimental browser extension.
 It is not a Tailscale release. The upstream BSD 3-Clause license and PATENTS file
 are preserved. The fork uses a separate extension ID and native-host name.

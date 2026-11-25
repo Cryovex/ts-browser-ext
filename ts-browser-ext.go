@@ -31,17 +31,23 @@ import (
 	"tailscale.com/net/socks5"
 	"tailscale.com/tsnet"
 	"tailscale.com/types/logger"
-	"tailscale.com/types/netmap"
 )
 
 var (
 	installFlag          = flag.String("install", "", "register the browser extension; string is 'C' (Chrome) or 'F' (Firefox) followed by extension ID")
 	uninstallFlag        = flag.Bool("uninstall", false, "unregister the browser extension")
 	uninstallBrowserFlag = flag.String("uninstall-browser", "", "unregister only C (Chrome) or F (Firefox)")
+	versionJSONFlag      = flag.Bool("version-json", false, "print native helper build information and exit")
 )
 
 func main() {
 	flag.Parse()
+	if *versionJSONFlag {
+		if err := json.NewEncoder(os.Stdout).Encode(buildInfo()); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if *installFlag != "" {
 		if err := install(*installFlag); err != nil {
 			log.Fatalf("installation error: %v", err)
@@ -238,7 +244,6 @@ type host struct {
 
 	mu              sync.Mutex
 	watchDead       bool
-	lastNetmap      *netmap.NetworkMap
 	lastState       ipn.State
 	lastBrowseToURL string
 	ctx             context.Context // for IPN bus; canceled by cancelCtx
@@ -410,7 +415,7 @@ func (h *host) handleInit(msg *request) (ret error) {
 		return fmt.Errorf("getting local client: %w", err)
 	}
 
-	wc, err := lc.WatchIPNBus(h.ctx, ipn.NotifyInitialState|ipn.NotifyRateLimit)
+	wc, err := lc.WatchIPNBus(h.ctx, ipn.NotifyInitialState)
 	if err != nil {
 		return fmt.Errorf("watching IPN bus: %w", err)
 	}
@@ -451,9 +456,6 @@ func (h *host) updateFromWatcher(wc *tailscale.IPNBusWatcher) bool {
 		return false
 	}
 
-	if n.NetMap != nil {
-		h.lastNetmap = n.NetMap
-	}
 	if n.State != nil {
 		h.lastState = *n.State
 	}
@@ -540,9 +542,8 @@ func (h *host) sendStatus() {
 	st := &status{}
 	h.mu.Lock()
 	st.Running = h.lastState == ipn.Running
-	if nm := h.lastNetmap; nm != nil {
-		st.Tailnet = nm.Domain
-	}
+	started := h.ts.Sys() != nil
+	ctx := h.ctx
 	if h.lastState == ipn.NeedsLogin {
 		st.NeedsLogin = true
 		st.BrowseToURL = h.lastBrowseToURL
@@ -553,6 +554,19 @@ func (h *host) sendStatus() {
 		st.Error = "WatchIPNBus stopped"
 	}
 	h.mu.Unlock()
+
+	// Newer Tailscale versions no longer send full netmaps on the IPN bus.
+	// Read only the local node's status; do not fetch the entire peer list or
+	// hold h.mu across a LocalAPI request.
+	if started && ctx != nil {
+		statusCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		if lc, err := h.ts.LocalClient(); err == nil {
+			if current, err := lc.StatusWithoutPeers(statusCtx); err == nil && current.CurrentTailnet != nil {
+				st.Tailnet = current.CurrentTailnet.Name
+			}
+		}
+		cancel()
+	}
 
 	if err := h.send(&reply{Status: st}); err != nil {
 		h.logf("failed to send status: %v", err)
